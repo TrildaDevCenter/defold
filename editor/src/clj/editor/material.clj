@@ -21,6 +21,7 @@
             [editor.gl.shader :as shader]
             [editor.graph-util :as gu]
             [editor.graphics :as graphics]
+            [editor.pipeline.shader-gen :as shader-gen]
             [editor.protobuf :as protobuf]
             [editor.protobuf-forms :as protobuf-forms]
             [editor.protobuf-forms-util :as protobuf-forms-util]
@@ -166,37 +167,38 @@
 (g/defnk produce-shader [_node-id vertex-shader-source-info vertex-program fragment-shader-source-info fragment-program vertex-constants fragment-constants samplers max-page-count]
   (or (prop-resource-error _node-id :vertex-program vertex-program "Vertex Program" "vp")
       (prop-resource-error _node-id :fragment-program fragment-program "Fragment Program" "fp")
-      (let [augmented-vertex-shader-info (shader-compilation/transpile-shader-source (resource/proj-path vertex-program) "vp" (:shader-source vertex-shader-source-info) max-page-count)
-            augmented-fragment-shader-info (shader-compilation/transpile-shader-source (resource/proj-path fragment-program) "fp" (:shader-source fragment-shader-source-info) max-page-count)
+      (let [augmented-vertex-shader-info (shader-gen/transpile-shader-source (resource/proj-path vertex-program) (:shader-source vertex-shader-source-info) max-page-count)
+            augmented-fragment-shader-info (shader-gen/transpile-shader-source (resource/proj-path fragment-program) (:shader-source fragment-shader-source-info) max-page-count)
+            augmented-shader-infos (pair augmented-vertex-shader-info augmented-fragment-shader-info)
+
             array-sampler-name->slice-sampler-names
-            (into {}
-                  (comp (distinct)
-                        (map (fn [array-sampler-name]
-                               (pair array-sampler-name
-                                     (mapv (fn [page-index]
-                                             (str array-sampler-name "_" page-index))
-                                           (range max-page-count))))))
-                  (concat
-                    (:array-sampler-names augmented-vertex-shader-info)
-                    (:array-sampler-names augmented-fragment-shader-info)))
+            (coll/transfer augmented-shader-infos {}
+              (mapcat :array-sampler-names)
+              (distinct)
+              (map (fn [array-sampler-name]
+                     (pair array-sampler-name
+                           (mapv (fn [page-index]
+                                   (str array-sampler-name "_" page-index))
+                                 (range max-page-count))))))
 
             strip-resource-binding-namespace-regex-str
             (resource-binding-namespaces->regex-str
-              (concat
-                (:resource-binding-namespaces augmented-vertex-shader-info)
-                (:resource-binding-namespaces augmented-fragment-shader-info)))
+              (coll/transfer augmented-shader-infos (sorted-set)
+                (mapcat :resource-binding-namespaces)))
 
-            uniforms (-> {}
-                         (into (map (fn [constant]
-                                      (pair (:name constant) (constant->val constant))))
-                               (concat vertex-constants fragment-constants))
-                         (into (comp
-                                 (mapcat (fn [{sampler-name :name}]
-                                           (or (array-sampler-name->slice-sampler-names sampler-name)
-                                               [sampler-name])))
-                                 (map (fn [resolved-sampler-name]
-                                        (pair resolved-sampler-name nil))))
-                               samplers))]
+            uniforms
+            (-> {}
+                (into (map (fn [constant]
+                             (pair (:name constant) (constant->val constant))))
+                      (concat vertex-constants fragment-constants))
+                (into (comp
+                        (mapcat (fn [{sampler-name :name}]
+                                  (or (array-sampler-name->slice-sampler-names sampler-name)
+                                      [sampler-name])))
+                        (map (fn [resolved-sampler-name]
+                               (pair resolved-sampler-name nil))))
+                      samplers))]
+
         (shader/make-shader _node-id (:shader-source augmented-vertex-shader-info) (:shader-source augmented-fragment-shader-info) uniforms array-sampler-name->slice-sampler-names strip-resource-binding-namespace-regex-str))))
 
 (defn- vector-type->form-field-type [vector-type]

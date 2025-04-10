@@ -16,7 +16,6 @@
   (:require [dynamo.graph :as g]
             [editor.buffers :as buffers]
             [editor.geom :as geom]
-            [editor.gl.shader :as shader]
             [editor.gl.vertex2 :as vtx]
             [editor.properties :as properties]
             [editor.protobuf :as protobuf]
@@ -32,7 +31,6 @@
   (:import [com.dynamo.bob.pipeline GraphicsUtil]
            [com.dynamo.graphics.proto Graphics$CoordinateSpace Graphics$VertexAttribute Graphics$VertexAttribute$SemanticType Graphics$VertexAttribute$VectorType]
            [com.google.protobuf ByteString]
-           [com.jogamp.opengl GL2]
            [editor.gl.vertex2 VertexBuffer]
            [java.nio ByteBuffer]
            [javax.vecmath Matrix4d]))

@@ -193,7 +193,7 @@
                                    :vertex-space-local :coordinate-space-local
                                    :vertex-space-world :coordinate-space-world)
         ;; TODO(instancing): We might not need the override-vertex-description? Seems like the override-shader should be enough.
-        ;; TODO(instancing): Also, we could maybe get this from the SPIRVReflector returned by ShaderProgramBuilderEditor/buildGLSLVariantTextureArray in material/transpile-shader-source?
+        ;; TODO(instancing): Also, we could maybe get this from the SPIRVReflector returned by ShaderProgramBuilderEditor/buildGLSLVariantTextureArray in shader-gen/transpile-shader-source?
         vertex-description (or override-vertex-description
                                (let [shader-attribute-infos-by-name (shader/attribute-infos shader gl)
                                      manufactured-attribute-keys [:position :texcoord0 :normal :tangent :color :mtx-world :mtx-normal]
