@@ -23,15 +23,27 @@
 (set! *warn-on-reflection* true)
 (set! *unchecked-math* :warn-on-boxed)
 
-(defn filename->pb-shader-type
-  ^Graphics$ShaderDesc$ShaderType [^String filename]
+(defn filename->shader-type [^String filename]
   {:pre [(string? filename)
          (pos? (count filename))]}
   (let [type-ext (string/lower-case (FilenameUtils/getExtension filename))]
     (case type-ext
-      "fp" Graphics$ShaderDesc$ShaderType/SHADER_TYPE_FRAGMENT
-      "vp" Graphics$ShaderDesc$ShaderType/SHADER_TYPE_VERTEX
-      "cp" Graphics$ShaderDesc$ShaderType/SHADER_TYPE_COMPUTE)))
+      "vp" :shader-type-vertex
+      "fp" :shader-type-fragment
+      "cp" :shader-type-compute)))
+
+(defn- shader-type->pb-shader-type
+  ^Graphics$ShaderDesc$ShaderType [shader-type]
+  (case shader-type
+    :shader-type-vertex Graphics$ShaderDesc$ShaderType/SHADER_TYPE_VERTEX
+    :shader-type-fragment Graphics$ShaderDesc$ShaderType/SHADER_TYPE_FRAGMENT
+    :shader-type-compute Graphics$ShaderDesc$ShaderType/SHADER_TYPE_COMPUTE))
+
+(defn filename->pb-shader-type
+  ^Graphics$ShaderDesc$ShaderType [^String filename]
+  (-> filename
+      filename->shader-type
+      shader-type->pb-shader-type))
 
 (defn shader-language->pb-shader-language
   ^Graphics$ShaderDesc$Language [shader-language]
@@ -110,14 +122,16 @@
          (pos? (count shader-proj-path))
          (string? shader-source)
          (pos? (count shader-source))]}
-  (let [pb-shader-type (filename->pb-shader-type shader-proj-path)
+  (let [shader-type (filename->shader-type shader-proj-path)
+        pb-shader-type (shader-type->pb-shader-type shader-type)
         glsl-compile-result (ShaderProgramBuilderEditor/buildGLSLVariantTextureArray shader-proj-path shader-source pb-shader-type transpile-target-pb-shader-language max-page-count)
         transpiled-shader-source (.source glsl-compile-result)
         array-sampler-names (vec (.arraySamplers glsl-compile-result))
         spirv-reflector (.reflector glsl-compile-result)
         attribute-reflection-infos (mapv make-attribute-reflection-info (.getInputs spirv-reflector))
         resource-binding-namespaces (resource-binding-namespaces spirv-reflector)]
-    {:shader-source transpiled-shader-source
+    {:shader-type shader-type
+     :shader-source transpiled-shader-source
      :resource-binding-namespaces resource-binding-namespaces
      :array-sampler-names array-sampler-names
      :attribute-reflection-infos attribute-reflection-infos}))

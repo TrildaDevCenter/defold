@@ -164,12 +164,20 @@
 (defn- resource-binding-namespaces->regex-str [resource-binding-namespaces]
   (str "^(" (string/join "|" resource-binding-namespaces) ")\\."))
 
-(g/defnk produce-shader [_node-id vertex-shader-source-info vertex-program fragment-shader-source-info fragment-program vertex-constants fragment-constants samplers max-page-count]
+(g/defnk produce-shader-request-data [_node-id vertex-program vertex-shader-source-info fragment-program fragment-shader-source-info max-page-count]
   (or (prop-resource-error _node-id :vertex-program vertex-program "Vertex Program" "vp")
       (prop-resource-error _node-id :fragment-program fragment-program "Fragment Program" "fp")
-      (let [augmented-vertex-shader-info (shader-gen/transpile-shader-source (resource/proj-path vertex-program) (:shader-source vertex-shader-source-info) max-page-count)
-            augmented-fragment-shader-info (shader-gen/transpile-shader-source (resource/proj-path fragment-program) (:shader-source fragment-shader-source-info) max-page-count)
-            augmented-shader-infos (pair augmented-vertex-shader-info augmented-fragment-shader-info)
+      (let [augmented-shader-infos
+            (mapv (fn [{:keys [resource shader-source]}]
+                    (let [proj-path (resource/proj-path resource)]
+                      (shader-gen/transpile-shader-source proj-path shader-source max-page-count)))
+                  [vertex-shader-source-info
+                   fragment-shader-source-info])
+
+            shader-type+source-pairs
+            (mapv (fn [{:keys [shader-type shader-source]}]
+                    (pair shader-type shader-source))
+                  augmented-shader-infos)
 
             array-sampler-name->slice-sampler-names
             (coll/transfer augmented-shader-infos {}
@@ -184,22 +192,30 @@
             strip-resource-binding-namespace-regex-str
             (resource-binding-namespaces->regex-str
               (coll/transfer augmented-shader-infos (sorted-set)
-                (mapcat :resource-binding-namespaces)))
+                (mapcat :resource-binding-namespaces)))]
 
-            uniforms
-            (-> {}
-                (into (map (fn [constant]
-                             (pair (:name constant) (constant->val constant))))
-                      (concat vertex-constants fragment-constants))
-                (into (comp
-                        (mapcat (fn [{sampler-name :name}]
-                                  (or (array-sampler-name->slice-sampler-names sampler-name)
-                                      [sampler-name])))
-                        (map (fn [resolved-sampler-name]
-                               (pair resolved-sampler-name nil))))
-                      samplers))]
+        (shader/make-shader-request-data
+          shader-type+source-pairs
+          array-sampler-name->slice-sampler-names
+          strip-resource-binding-namespace-regex-str))))
 
-        (shader/make-shader _node-id (:shader-source augmented-vertex-shader-info) (:shader-source augmented-fragment-shader-info) uniforms array-sampler-name->slice-sampler-names strip-resource-binding-namespace-regex-str))))
+(g/defnk produce-shader [_node-id shader-request-data vertex-constants fragment-constants samplers]
+  (let [array-sampler-name->slice-sampler-names (:array-sampler-name->uniform-names shader-request-data)
+
+        uniform-values-by-name
+        (-> {}
+            (into (map (fn [constant]
+                         (pair (:name constant) (constant->val constant))))
+                  (concat vertex-constants fragment-constants))
+            (into (comp
+                    (mapcat (fn [{sampler-name :name}]
+                              (or (array-sampler-name->slice-sampler-names sampler-name)
+                                  [sampler-name])))
+                    (map (fn [resolved-sampler-name]
+                           (pair resolved-sampler-name nil))))
+                  samplers))]
+
+    (shader/make-shader-lifecycle _node-id shader-request-data uniform-values-by-name)))
 
 (defn- vector-type->form-field-type [vector-type]
   (case vector-type
@@ -526,6 +542,7 @@
 
   (output save-value g/Any produce-save-value)
   (output build-targets g/Any :cached produce-build-targets)
+  (output shader-request-data g/Any :cached produce-shader-request-data)
   (output shader ShaderLifecycle :cached produce-shader)
   (output samplers [g/KeywordMap] (gu/passthrough samplers))
   (output attribute-infos [g/KeywordMap] :cached produce-attribute-infos))

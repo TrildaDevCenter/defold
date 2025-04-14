@@ -104,7 +104,7 @@ There are some examples in the testcases in dynamo.shader.translate-test."
             [editor.gl.protocols :refer [GlBind]]
             [editor.scene-cache :as scene-cache]
             [util.coll :as coll :refer [pair]])
-  (:import [com.jogamp.opengl GL GL2]
+  (:import [com.jogamp.opengl GL2]
            [java.nio ByteBuffer FloatBuffer IntBuffer]
            [java.nio.charset StandardCharsets]
            [javax.vecmath Matrix4d Point3d Vector4d Vector4f]))
@@ -348,12 +348,24 @@ This must be submitted to the driver for compilation before you can use it. See
   [^GL2 gl progn loc val]
   ;; No-Op. This is for sampler uniforms. They are just a name. Contains no
   ;; value to set.
-  )
+  nil)
 
 (defmethod set-uniforms-at-index (class (float-array []))
   [^GL2 gl progn loc count vals]
   (let [fb (FloatBuffer/wrap vals)]
     (.glUniform4fv gl loc count fb)))
+
+(defn- shader-type? [value]
+  (case value
+    (:shader-type-vertex :shader-type-fragment #_ :shader-type-compute) true
+    false))
+
+(defn- shader-type->gl-shader-type
+  ^long [shader-type]
+  (case shader-type
+    :shader-type-vertex GL2/GL_VERTEX_SHADER
+    :shader-type-fragment GL2/GL_FRAGMENT_SHADER
+    #_#_ :shader-type-compute GL3/GL_COMPUTE_SHADER))
 
 (defn program-link-errors
   [^GL2 gl progn]
@@ -378,7 +390,7 @@ This must be submitted to the driver for compilation before you can use it. See
     (.glLinkProgram gl program)
     (let [status (IntBuffer/allocate 1)]
       (.glGetProgramiv gl program GL2/GL_LINK_STATUS status)
-      (if (= GL/GL_TRUE (.get status 0))
+      (if (= GL2/GL_TRUE (.get status 0))
         program
         (try
           (throw (Exception. (str "Program link failure.\n" (program-link-errors gl program))))
@@ -397,20 +409,20 @@ This must be submitted to the driver for compilation before you can use it. See
           (bbuf->string info-log-buffer 0 string-length))
         ""))))
 
-(defn delete-shader
+(defn- delete-shader
   [^GL2 gl ^long shader]
   (when-not (zero? shader)
     (.glDeleteShader gl shader)))
 
-(defn make-shader*
-  [type ^GL2 gl source]
+(defn- make-shader*
+  [gl-shader-type ^GL2 gl source]
   ;; Shader source can be either a string or a collection of strings.
   ;; However, it is not intended to be a collection of lines. The
   ;; shader compiler will simply read from each string in turn as if
   ;; they were concatenated. Thus, you need to have newline characters
   ;; at the end of each line.
   (assert (or (string? source) (coll? source)))
-  (let [shader-name (.glCreateShader gl type)
+  (let [shader-name (.glCreateShader gl gl-shader-type)
         source-strings (into-array String
                                    (if (coll? source)
                                      source
@@ -419,15 +431,15 @@ This must be submitted to the driver for compilation before you can use it. See
     (.glCompileShader gl shader-name)
     (let [status (IntBuffer/allocate 1)]
       (.glGetShaderiv gl shader-name GL2/GL_COMPILE_STATUS status)
-      (if (= GL/GL_TRUE (.get status 0))
+      (if (= GL2/GL_TRUE (.get status 0))
         shader-name
         (try
           (throw (Exception. (str "Shader compilation failure.\n" (shader-compile-errors gl shader-name))))
           (finally
             (delete-shader gl shader-name)))))))
 
-(def make-fragment-shader (partial make-shader* GL2/GL_FRAGMENT_SHADER))
-(def make-vertex-shader (partial make-shader* GL2/GL_VERTEX_SHADER))
+(def ^:private make-fragment-shader (partial make-shader* (shader-type->gl-shader-type :shader-type-fragment)))
+(def ^:private make-vertex-shader (partial make-shader* (shader-type->gl-shader-type :shader-type-vertex)))
 
 (defn- set-uniform-impl! [gl program uniform-infos uniform-name uniform-value]
   (when-some [uniform-info (uniform-infos uniform-name)]
@@ -446,7 +458,7 @@ This must be submitted to the driver for compilation before you can use it. See
          slice-sampler-uniform-names
          texture-units)))
 
-(defrecord ^:private ShaderRequestData [vertex-shader-source fragment-shader-source array-sampler-name->uniform-names strip-resource-binding-namespace-regex-str])
+(defrecord ^:private ShaderRequestData [shader-type+source-pairs array-sampler-name->uniform-names strip-resource-binding-namespace-regex-str])
 
 (defrecord ShaderLifecycle [request-id ^ShaderRequestData request-data uniforms]
   GlBind
@@ -508,6 +520,37 @@ This must be submitted to the driver for compilation before you can use it. See
               (catch IllegalArgumentException e
                 (throw (IllegalArgumentException. (format "Failed setting sampler uniform '%s' at index %d." sampler-name sampler-index) e))))))))))
 
+(defn- shader-type+source-pair? [value]
+  (and (vector? value)
+       (= 2 (count value))
+       (let [[shader-type shader-source] value]
+         (and (shader-type? shader-type)
+              (string? shader-source)
+              (pos? (count shader-source))))))
+
+(defn make-shader-request-data
+  ^ShaderRequestData [shader-type+source-pairs array-sampler-name->uniform-names strip-resource-binding-namespace-regex-str]
+  {:pre [(every? shader-type+source-pair? shader-type+source-pairs)
+         (map? array-sampler-name->uniform-names)
+         (or (nil? strip-resource-binding-namespace-regex-str)
+             (and (string? strip-resource-binding-namespace-regex-str)
+                  (pos? (count strip-resource-binding-namespace-regex-str))))]}
+  (->ShaderRequestData
+    (vec shader-type+source-pairs)
+    array-sampler-name->uniform-names
+    strip-resource-binding-namespace-regex-str))
+
+(defn make-shader-lifecycle
+  ^ShaderLifecycle [request-id request-data uniform-values-by-name]
+  {:pre [(some? request-id)
+         (instance? ShaderRequestData request-data)
+         (map? uniform-values-by-name)
+         (every? string? (keys uniform-values-by-name))]}
+  (->ShaderLifecycle request-id request-data uniform-values-by-name))
+
+(defn shader-lifecycle? [value]
+  (instance? ShaderLifecycle value))
+
 (defn make-shader
   (^ShaderLifecycle [request-id vertex-shader-source fragment-shader-source]
    (make-shader request-id vertex-shader-source fragment-shader-source {} {} nil))
@@ -516,35 +559,33 @@ This must be submitted to the driver for compilation before you can use it. See
   (^ShaderLifecycle [request-id vertex-shader-source fragment-shader-source uniforms array-sampler-name->uniform-names]
    (make-shader request-id vertex-shader-source fragment-shader-source uniforms array-sampler-name->uniform-names nil))
   (^ShaderLifecycle [request-id vertex-shader-source fragment-shader-source uniforms array-sampler-name->uniform-names strip-resource-binding-namespace-regex-str]
-   {:pre [(some? request-id)
-          (string? vertex-shader-source)
-          (string? fragment-shader-source)
-          (or (map? uniforms))
-          (or (map? array-sampler-name->uniform-names))
-          (or (nil? strip-resource-binding-namespace-regex-str) (string? strip-resource-binding-namespace-regex-str))]}
-   ;; Construct the request data here so we can benefit from cached structural hashing.
-   (let [request-data (->ShaderRequestData vertex-shader-source fragment-shader-source array-sampler-name->uniform-names strip-resource-binding-namespace-regex-str)]
-     (->ShaderLifecycle request-id request-data uniforms))))
-
-(defn shader-lifecycle? [value]
-  (instance? ShaderLifecycle value))
+   ;; TODO(instancing): Get rid of this and rename make-shader-lifecycle to make-shader.
+   ;; We want to store the ShaderRequestData in a cached output when possible, so equality comparisons will be quicker.
+   ;; We also want to keep the request-id around so we can benefit from cached structural hashing.
+   (let [request-data
+         (make-shader-request-data
+           [(pair :shader-type-vertex vertex-shader-source)
+            (pair :shader-type-fragment fragment-shader-source)]
+           array-sampler-name->uniform-names
+           strip-resource-binding-namespace-regex-str)]
+     (make-shader-lifecycle request-id request-data uniforms))))
 
 (defn is-using-array-samplers? [^ShaderLifecycle shader-lifecycle]
   (let [^ShaderRequestData request-data (.-request-data shader-lifecycle)
         array-sampler-name->uniform-names (.-array-sampler-name->uniform-names request-data)]
     (pos? (count array-sampler-name->uniform-names))))
 
-;; Used by tests.
-(defn vertex-shader-source
-  ^String [^ShaderLifecycle shader-lifecycle]
-  (let [^ShaderRequestData request-data (.-request-data shader-lifecycle)]
-    (.-vertex-shader-source request-data)))
+(defn- first-shader-source-of-type
+  ^String [shader-type ^ShaderLifecycle shader-lifecycle]
+  (some (fn [shader-type+source-pair]
+          (when (= shader-type (first shader-type+source-pair))
+            (second shader-type+source-pair)))
+        (let [^ShaderRequestData request-data (.-request-data shader-lifecycle)]
+          (.-shader-type+source-pairs request-data))))
 
 ;; Used by tests.
-(defn fragment-shader-source
-  ^String [^ShaderLifecycle shader-lifecycle]
-  (let [^ShaderRequestData request-data (.-request-data shader-lifecycle)]
-    (.-fragment-shader-source request-data)))
+(def vertex-shader-source (partial first-shader-source-of-type :shader-type-vertex))
+(def fragment-shader-source (partial first-shader-source-of-type :shader-type-fragment))
 
 (defn page-count-mismatch-error-message-raw [is-paged-material texture-page-count material-max-page-count image-property-name]
   (when (and (some? texture-page-count)
@@ -642,59 +683,77 @@ This must be submitted to the driver for compilation before you can use it. See
     uniform-info))
 
 (defn- make-shader-program [^GL2 gl ^ShaderRequestData request-data]
-  (let [vertex-shader-source (.-vertex-shader-source request-data)
-        vertex-shader (make-vertex-shader gl vertex-shader-source)]
-    (try
-      (let [fragment-shader-source (.-fragment-shader-source request-data)
-            fragment-shader (make-fragment-shader gl fragment-shader-source)]
-        (try
-          (let [program (make-program gl vertex-shader fragment-shader)
-                strip-resource-binding-namespace-regex (some-> (.-strip-resource-binding-namespace-regex-str request-data) re-pattern)
-                array-sampler-name->uniform-names (.-array-sampler-name->uniform-names request-data)
+  (let [gl-program
+        (let [gl-shaders
+              (reduce
+                (fn [gl-shaders shader-type+source-pair]
+                  (try
+                    (let [[shader-type shader-source] shader-type+source-pair
+                          gl-shader-type (shader-type->gl-shader-type shader-type)
+                          gl-shader (make-shader* gl-shader-type gl shader-source)]
+                      (conj gl-shaders gl-shader))
+                    (catch Throwable error
+                      ;; One of the input shaders failed to compile. Clean up
+                      ;; any successfully created shaders before re-throwing.
+                      (doseq [gl-shader (rseq gl-shaders)]
+                        (.glDeleteShader gl gl-shader))
+                      (throw error))))
+                (vector-of :int)
+                (.-shader-type+source-pairs request-data))]
+          (try
+            ;; This attaches all the created gl-shaders to the gl-program,
+            ;; increasing their reference count.
+            (apply make-program gl gl-shaders)
+            (finally
+              ;; Regardless of if the created gl-shaders failed to link, we
+              ;; should decrease their reference count now that they have been
+              ;; attached to the gl-program.
+              (doseq [gl-shader (rseq gl-shaders)]
+                (.glDeleteShader gl gl-shader)))))
 
-                attribute-infos
-                (into {}
-                      (map (fn [^long attribute-index]
-                             (let [attribute-info (attribute-info gl program attribute-index)]
-                               (pair (:name attribute-info) attribute-info))))
-                      (range (gl-shader-parameter gl program GL2/GL_ACTIVE_ATTRIBUTES)))
+        strip-resource-binding-namespace-regex (some-> (.-strip-resource-binding-namespace-regex-str request-data) re-pattern)
+        array-sampler-name->uniform-names (.-array-sampler-name->uniform-names request-data)
 
-                uniform-infos
-                (into {}
-                      (map (fn [^long uniform-index]
-                             (let [uniform-info (strip-resource-namespace (uniform-info gl program uniform-index) strip-resource-binding-namespace-regex)]
-                               (pair (:name uniform-info) uniform-info))))
-                      (range (gl-shader-parameter gl program GL2/GL_ACTIVE_UNIFORMS)))
+        attribute-infos
+        (into {}
+              (map (fn [^long attribute-index]
+                     (let [attribute-info (attribute-info gl gl-program attribute-index)]
+                       (pair (:name attribute-info) attribute-info))))
+              (range (gl-shader-parameter gl gl-program GL2/GL_ACTIVE_ATTRIBUTES)))
 
-                array-sampler-uniform-name?
-                (into #{}
-                      (mapcat val)
-                      array-sampler-name->uniform-names)
+        uniform-infos
+        (into {}
+              (map (fn [^long uniform-index]
+                     (let [uniform-info (strip-resource-namespace (uniform-info gl gl-program uniform-index) strip-resource-binding-namespace-regex)]
+                       (pair (:name uniform-info) uniform-info))))
+              (range (gl-shader-parameter gl gl-program GL2/GL_ACTIVE_UNIFORMS)))
 
-                sampler-name->uniform-names
-                (into array-sampler-name->uniform-names
-                      (keep (fn [[uniform-name uniform-info]]
-                              (when (sampler-uniform-type? (:type uniform-info))
-                                (when-not (array-sampler-uniform-name? uniform-name)
-                                  (pair uniform-name [uniform-name])))))
-                      uniform-infos)
+        array-sampler-uniform-name?
+        (into #{}
+              (mapcat val)
+              array-sampler-name->uniform-names)
 
-                sampler-index->sampler-name
-                (->> sampler-name->uniform-names
-                     (mapv (fn [[sampler-name uniform-names]]
-                             (pair sampler-name
-                                   (uniform-infos (first uniform-names)))))
-                     (sort-by (comp :index second))
-                     (mapv first))]
-            {:program program
-             :uniform-infos uniform-infos
-             :attribute-infos attribute-infos
-             :sampler-name->uniform-names sampler-name->uniform-names
-             :sampler-index->sampler-name sampler-index->sampler-name})
-          (finally
-            (delete-shader gl fragment-shader)))) ; flag shaders for deletion: they will be deleted immediately, or when we delete the program to which they are attached
-      (finally
-        (delete-shader gl vertex-shader)))))
+        sampler-name->uniform-names
+        (into array-sampler-name->uniform-names
+              (keep (fn [[uniform-name uniform-info]]
+                      (when (sampler-uniform-type? (:type uniform-info))
+                        (when-not (array-sampler-uniform-name? uniform-name)
+                          (pair uniform-name [uniform-name])))))
+              uniform-infos)
+
+        sampler-index->sampler-name
+        (->> sampler-name->uniform-names
+             (mapv (fn [[sampler-name uniform-names]]
+                     (pair sampler-name
+                           (uniform-infos (first uniform-names)))))
+             (sort-by (comp :index second))
+             (mapv first))]
+
+    {:program gl-program
+     :uniform-infos uniform-infos
+     :attribute-infos attribute-infos
+     :sampler-name->uniform-names sampler-name->uniform-names
+     :sampler-index->sampler-name sampler-index->sampler-name}))
 
 (defn- update-shader-program [^GL2 gl {:keys [program]} request-data]
   (delete-program gl program)

@@ -66,12 +66,12 @@
         shader-module-descs (e/map (fn [{:keys [proj-path shader-source]}]
                                      (make-shader-module-desc proj-path shader-source))
                                    (:shader-infos user-data))
-        result (make-shader-desc-with-variants build-resource shader-module-descs max-page-count)
-        compile-warning-messages (.buildWarnings result)
+        shader-desc-build-result (make-shader-desc-with-variants build-resource shader-module-descs max-page-count)
+        compile-warning-messages (.buildWarnings shader-desc-build-result)
         compile-error-values (mapv error-string->error-value compile-warning-messages)]
     (g/precluding-errors compile-error-values
       {:resource build-resource
-       :content (protobuf/pb->bytes (.-shaderDesc result))})))
+       :content (protobuf/pb->bytes (.-shaderDesc shader-desc-build-result))})))
 
 (defn make-shader-build-target [node-id shader-source-infos max-page-count]
   {:pre [(g/node-id? node-id)
