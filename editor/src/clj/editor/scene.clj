@@ -1286,6 +1286,7 @@
             (reset! async-copy-state-atom (scene-async/finish-image! @async-copy-state-atom gl))
             (let [viewport (g/node-value view-id :viewport evaluation-context)
                   pass->render-args (g/node-value view-id :pass->render-args evaluation-context)]
+              (scene-cache/process-pending-deletions! gl)
               (render! gl-context render-mode renderables new-updatable-states viewport pass->render-args)
               (ui/user-data! image-view ::last-renderables renderables)
               (ui/user-data! image-view ::last-frame-version frame-version)
@@ -1464,6 +1465,7 @@
 (g/defnk produce-frame [all-renderables ^Region viewport pass->render-args ^GLAutoDrawable drawable]
   (when drawable
     (gl/with-drawable-as-current drawable
+      (scene-cache/process-pending-deletions! gl)
       (render! gl-context :normal all-renderables nil viewport pass->render-args)
       (let [[w h] (vp-dims viewport)
             buf-image (read-to-buffered-image w h)]
